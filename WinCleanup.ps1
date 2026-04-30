@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Windows 11 Disk Cleanup Script
@@ -20,8 +20,9 @@ $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::A
 
 if (-not $isAdmin) {
     Write-Host "Not running as Administrator. Attempting to re-launch elevated..." -ForegroundColor Yellow
-    Start-Process -FilePath "powershell.exe" `
-        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" `
+    $shell = if ($PSVersionTable.PSVersion.Major -ge 6) { "pwsh.exe" } else { "powershell.exe" }
+    Start-Process -FilePath $shell `
+        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$PSCommandPath`"" `
         -Verb RunAs
     exit
 }
@@ -165,18 +166,30 @@ if ($hibernateEnabled -eq 1) {
 # ─────────────────────────────────────────────
 Write-Section "Step 6 of 6 — Shadow Copy Storage (System Restore)"
 
-Write-Status "Current shadow storage allocation:"
-vssadmin list shadowstorage | Where-Object { $_ -match "Maximum|Used|Allocated" } |
-    ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
-
-Write-Host ""
-Write-Host "  Recommend capping shadow storage at 5 GiB to limit growth." -ForegroundColor Yellow
-$confirmVss = Read-Host "  Set maximum shadow copy storage to 5 GiB? (Y/N)"
-if ($confirmVss -match "^[Yy]$") {
-    vssadmin resize shadowstorage /for=C: /on=C: /maxsize=5GB
-    Write-Status "Shadow copy storage capped at 5 GiB." Green
+$vssadmin = "$env:SystemRoot\System32\vssadmin.exe"
+if (-not (Test-Path $vssadmin)) {
+    Write-Status "vssadmin.exe not available on this system — skipping shadow copy management." Yellow
+    Write-Status "(If unexpected, run: DISM /Online /Cleanup-Image /RestoreHealth, then sfc /scannow.)" DarkGray
 } else {
-    Write-Status "Skipped — shadow copy storage unchanged." DarkGray
+    Write-Status "Current shadow storage allocation:"
+    $shadowOutput = & $vssadmin list shadowstorage 2>&1
+    $shadowLines  = $shadowOutput | Where-Object { $_ -match "Maximum|Used|Allocated" }
+
+    if (-not $shadowLines) {
+        Write-Status "No shadow storage configured for this volume — System Restore may be disabled." DarkGray
+        Write-Status "Skipping shadow copy resize." DarkGray
+    } else {
+        $shadowLines | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        Write-Host ""
+        Write-Host "  Recommend capping shadow storage at 5 GiB to limit growth." -ForegroundColor Yellow
+        $confirmVss = Read-Host "  Set maximum shadow copy storage to 5 GiB? (Y/N)"
+        if ($confirmVss -match "^[Yy]$") {
+            & $vssadmin resize shadowstorage /for=C: /on=C: /maxsize=5GB
+            Write-Status "Shadow copy storage capped at 5 GiB." Green
+        } else {
+            Write-Status "Skipped — shadow copy storage unchanged." DarkGray
+        }
+    }
 }
 
 # ─────────────────────────────────────────────
